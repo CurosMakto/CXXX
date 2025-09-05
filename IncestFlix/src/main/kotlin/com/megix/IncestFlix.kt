@@ -74,20 +74,7 @@ class IncestFlix : MainAPI() {
             card.select("img[src]").firstOrNull()?.attr("abs:src")?.let { posterCandidates.add(it) }
             card.select("img[data-src]").firstOrNull()?.attr("abs:data-src")?.let { posterCandidates.add(it) }
 
-            var poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
-            // Network fallback: fetch watch page og:image when missing (cap to first 8 items, short timeout)
-            if (poster.isNullOrBlank() && idx < 8) {
-                runCatching {
-                    val wdoc = app.get(
-                        href,
-                        headers = mapOf("User-Agent" to ua),
-                        referer = mainUrl,
-                        allowRedirects = true,
-                        timeout = 6000
-                    ).document
-                    poster = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
-                }
-            }
+            val poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
                 newMovieSearchResponse(title, href, TvType.Movie) {
                     this.posterUrl = poster?.let { normalizeUrl(it) }
                     this.posterHeaders = mapOf(Pair("referer", mainUrl))
@@ -163,9 +150,28 @@ class IncestFlix : MainAPI() {
             ?: name
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.let { normalizeUrl(it) }
 
-        // Collect some related items if available
-        val recommendations = document.select("a[href*=/watch/]")
-            .mapNotNull { it.toSearchResultWithPoster() }
+        // Collect related items with targeted og:image fallback for missing posters (fast, capped)
+        val recAnchors = document.select("a[href*=/watch/]")
+        val recommendations = recAnchors.mapIndexedNotNull { idx, a ->
+            val item = a.toSearchResultWithPoster() ?: return@mapIndexedNotNull null
+            if (item.posterUrl.isNullOrBlank() && idx < 8) {
+                runCatching {
+                    val wdoc = app.get(
+                        item.url,
+                        headers = mapOf("User-Agent" to ua),
+                        referer = mainUrl,
+                        allowRedirects = true,
+                        timeout = 3000
+                    ).document
+                    val og = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
+                    if (!og.isNullOrBlank()) {
+                        item.posterUrl = normalizeUrl(og)
+                        item.posterHeaders = mapOf(Pair("referer", mainUrl))
+                    }
+                }
+            }
+            item
+        }
             .filter { it.url != url }
             .distinctBy { it.url }
             .take(20)
