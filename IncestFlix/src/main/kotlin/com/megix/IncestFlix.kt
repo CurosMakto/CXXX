@@ -239,11 +239,11 @@ class IncestFlix : MainAPI() {
                 newExtractorLink(
                     source = name,
                     name = if (isHls) "HLS" else "Direct",
-                    url = link,
-                    referer = data,
-                    quality = Qualities.Unknown.value,
-                    isM3u8 = isHls
+                    url = link
                 ) {
+                    this.referer = data
+                    this.quality = Qualities.Unknown.value
+                    this.isM3u8 = isHls
                     this.headers = mapOf(
                         Pair("User-Agent", ua),
                         Pair("Referer", data)
