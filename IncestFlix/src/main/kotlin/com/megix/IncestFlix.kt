@@ -67,12 +67,23 @@ class IncestFlix : MainAPI() {
             // Infer poster locally
             val card = a.parent() ?: a
             val posterCandidates = mutableListOf<String>()
+            // overlays / background-image styles
             card.siblingElements().select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
             for (p in card.parents()) { p.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) } }
             card.select("[style*=background-image]").forEach { posterCandidates.add(it.attr("style")) }
             card.parent()?.select("[style*=background-image]")?.forEach { posterCandidates.add(it.attr("style")) }
-            card.select("img[src]").firstOrNull()?.attr("abs:src")?.let { posterCandidates.add(it) }
-            card.select("img[data-src]").firstOrNull()?.attr("abs:data-src")?.let { posterCandidates.add(it) }
+            // explicit attributes
+            listOf("src", "data-src", "data-lazy-src", "data-original", "data-bg").forEach { attr ->
+                card.select("img[$attr], [${attr}]").firstOrNull()?.let { el ->
+                    val v = el.attr("abs:$attr").ifBlank { el.attr(attr) }
+                    if (v.isNotBlank()) posterCandidates.add(v)
+                }
+            }
+            // srcset handling (pick first url)
+            card.select("img[srcset], source[srcset]").firstOrNull()?.attr("srcset")?.let { ss ->
+                val first = ss.split(',').map { it.trim().substringBefore(' ') }.firstOrNull()
+                if (!first.isNullOrBlank()) posterCandidates.add(first)
+            }
 
             val poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
                 newMovieSearchResponse(title, href, TvType.Movie) {
@@ -130,12 +141,13 @@ class IncestFlix : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // WordPress-style search pagination
+        // Tag-based search: /tag/{slug}/page/{i}
+        val slug = query.trim().replace(Regex("\\s+"), "-")
         val out = mutableListOf<SearchResponse>()
-        for (i in 1..5) {
-            val url = if (i == 1) "$mainUrl/?s=${query}" else "$mainUrl/page/$i/?s=${query}"
+        for (i in 1..6) {
+            val url = if (i == 1) "$mainUrl/tag/$slug" else "$mainUrl/tag/$slug/page/$i"
             val doc = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
-            val results = doc.select("a[href^=/watch], a[href*=/watch/], a[href*=/embed/]")
+            val results = doc.select("a[href^=/watch], a[href*=/watch/]")
                 .mapNotNull { it.toSearchResultWithPoster() }
             out.addAll(results)
             if (results.isEmpty()) break
