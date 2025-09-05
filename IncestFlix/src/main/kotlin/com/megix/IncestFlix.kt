@@ -23,21 +23,75 @@ class IncestFlix : MainAPI() {
         "$mainUrl/tag/MS" to "MS Mother, Son",
         "$mainUrl/tag/FD" to "FD Father, Daughter",
         "$mainUrl/tag/MD" to "MD Mother, Daughter",
+        "$mainUrl/random" to "Random",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) request.data else "${request.data}/page/$page"
-        val document = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
+        val res = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl, allowRedirects = true)
+        val document = res.document
 
-        val items = document.select("a[href^=/watch], a[href*=/watch/]")
-            .mapNotNull { it.toSearchResultWithPoster() }
+        // Special-case random: resolve to the resulting watch page and show it as a single item
+        if (request.data.endsWith("/random")) {
+            val finalWatch = document.selectFirst("meta[property=og:url]")?.attr("content")
+                ?: document.selectFirst("a[href*=/watch/]")?.attr("abs:href")
+                ?: res.url
+            if (!finalWatch.isNullOrBlank()) {
+                val wdoc = app.get(finalWatch, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
+                val wtitle = wdoc.selectFirst("meta[property=og:title]")?.attr("content") ?: wdoc.title()
+                val wposter = wdoc.selectFirst("meta[property=og:image]")?.attr("content")?.let { normalizeUrl(it) }
+                val one = newMovieSearchResponse(wtitle.ifBlank { finalWatch }, finalWatch, TvType.Movie) {
+                    this.posterUrl = wposter
+                    this.posterHeaders = mapOf(Pair("referer", mainUrl))
+                }
+                return newHomePageResponse(
+                    list = HomePageList(
+                        name = request.name,
+                        list = listOf(one),
+                        isHorizontalImages = true
+                    ),
+                    hasNext = true
+                )
+            }
+        }
+
+        val anchors = document.select("a[href^=/watch], a[href*=/watch/]")
+        val built = anchors.mapNotNull { a ->
+            val href = a.attr("abs:href").ifBlank { normalizeUrl(a.attr("href")) }
+            if (href.isBlank()) return@mapNotNull null
+            val rawTitle = a.attr("title").ifBlank { a.ownText().ifBlank { a.text() } }.trim()
+            val title = if (rawTitle.isNotBlank()) rawTitle else href.substringAfterLast('/').replace('-', ' ').trim().ifBlank { href }
+
+            // Infer poster locally
+            val card = a.parent() ?: a
+            val posterCandidates = mutableListOf<String>()
+            card.siblingElements().select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
+            for (p in card.parents()) { p.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) } }
+            card.select("[style*=background-image]").forEach { posterCandidates.add(it.attr("style")) }
+            card.parent()?.select("[style*=background-image]")?.forEach { posterCandidates.add(it.attr("style")) }
+            card.select("img[src]").firstOrNull()?.attr("abs:src")?.let { posterCandidates.add(it) }
+            card.select("img[data-src]").firstOrNull()?.attr("abs:data-src")?.let { posterCandidates.add(it) }
+
+            var poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
+            // Network fallback: fetch watch page og:image when missing
+            if (poster.isNullOrBlank()) {
+                runCatching {
+                    val wdoc = app.get(href, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
+                    poster = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
+                }
+            }
+            newMovieSearchResponse(title, href, TvType.Movie) {
+                this.posterUrl = poster?.let { normalizeUrl(it) }
+                this.posterHeaders = mapOf(Pair("referer", mainUrl))
+            }
+        }
             .distinctBy { it.url }
             .take(30)
 
         return newHomePageResponse(
             list = HomePageList(
                 name = request.name,
-                list = items,
+                list = built,
                 isHorizontalImages = true
             ),
             hasNext = true
