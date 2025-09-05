@@ -26,7 +26,7 @@ class IncestFlix : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) request.data else "${request.data}/page/$page"
-        val document = app.get(url).document
+        val document = app.get(url, referer = mainUrl).document
 
         val items = document.select("a[href^=/watch], a[href*=/watch/]")
             .mapNotNull { it.toSearchResultWithPoster() }
@@ -70,7 +70,14 @@ class IncestFlix : MainAPI() {
         card.select("img[src]").firstOrNull()?.attr("abs:src")?.let { posterCandidates.add(it) }
         card.select("img[data-src]").firstOrNull()?.attr("abs:data-src")?.let { posterCandidates.add(it) }
 
-        val poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
+        var poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
+        if (poster.isNullOrBlank()) {
+            // Fallback: fetch the watch page and read og:image
+            runCatching {
+                val ld = app.get(href, referer = mainUrl).document
+                poster = ld.selectFirst("meta[property=og:image]")?.attr("content")
+            }
+        }
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = poster
