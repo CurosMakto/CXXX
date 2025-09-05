@@ -6,7 +6,7 @@ import org.jsoup.nodes.Element
 import org.jsoup.nodes.Document
 
 class IncestFlix : MainAPI() {
-    override var mainUrl = "https://www.incestflix.com"
+    override var mainUrl = "https://www.incestflix.party"
     override var name = "IncestFlix"
     override val hasMainPage = true
     override var lang = "en"
@@ -56,7 +56,7 @@ class IncestFlix : MainAPI() {
         }
 
         val anchors = document.select("a[href^=/watch], a[href*=/watch/]")
-        val built = anchors.mapNotNull { a ->
+        val built = anchors.mapIndexedNotNull { idx, a ->
             val href = a.attr("abs:href").ifBlank { normalizeUrl(a.attr("href")) }
             if (href.isBlank()) return@mapNotNull null
             val rawTitle = a.attr("title").ifBlank { a.ownText().ifBlank { a.text() } }.trim()
@@ -73,10 +73,16 @@ class IncestFlix : MainAPI() {
             card.select("img[data-src]").firstOrNull()?.attr("abs:data-src")?.let { posterCandidates.add(it) }
 
             var poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
-            // Network fallback: fetch watch page og:image when missing
-            if (poster.isNullOrBlank()) {
+            // Network fallback: fetch watch page og:image when missing (cap to first 8 items, short timeout)
+            if (poster.isNullOrBlank() && idx < 8) {
                 runCatching {
-                    val wdoc = app.get(href, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
+                    val wdoc = app.get(
+                        href,
+                        headers = mapOf("User-Agent" to ua),
+                        referer = mainUrl,
+                        allowRedirects = true,
+                        timeout = 6000
+                    ).document
                     poster = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
                 }
             }
@@ -182,12 +188,19 @@ class IncestFlix : MainAPI() {
         // PRIORITY: dedicated player element
         doc.selectFirst("video#incflix-player")?.let { v ->
             val poster = v.attr("poster").takeIf { it.isNotBlank() }?.let { normalizeUrl(it) }
-            val src = v.selectFirst("source[src]")?.attr("src")?.let { normalizeUrl(it) }
-            if (!src.isNullOrBlank()) {
-                candidates += src
+            // Possible layouts:
+            // 1) <video id=incflix-player><source src=...></video>
+            // 2) <video id=incflix-player ... /> <source src=...></video>
+            // 3) <video id=incflix-player src=...>
+            val srcAttr = v.attr("src").takeIf { it.isNotBlank() }?.let { normalizeUrl(it) }
+            val childSource = v.selectFirst("source[src]")?.attr("src")?.let { normalizeUrl(it) }
+            val siblingSource = v.nextElementSibling()?.takeIf { it.tagName().equals("source", true) }?.attr("src")?.let { normalizeUrl(it) }
+            val genSibling = doc.selectFirst("video#incflix-player ~ source[src]")?.attr("src")?.let { normalizeUrl(it) }
+
+            listOf(srcAttr, childSource, siblingSource, genSibling).filterNotNull().forEach { s ->
+                if (s.isNotBlank()) candidates += s
             }
-            // Also emit poster-based preview if needed (not a stream)
-            // poster is handled in load() via og:image, so no callback here
+            // poster handled in load() via og:image
         }
 
         // video > source[src]
@@ -197,12 +210,15 @@ class IncestFlix : MainAPI() {
         // data-src/data-video on video/source
         candidates += doc.select("video[data-src], source[data-src]").map { normalizeUrl(it.attr("data-src")) }
         candidates += doc.select("video[data-video]").map { normalizeUrl(it.attr("data-video")) }
-        // iframes
+        // iframes (rare but keep)
         candidates += doc.select("iframe[src]").map { normalizeUrl(it.attr("src")) }
         // anchors that look like media links
         candidates += doc.select("a[href]")
             .map { normalizeUrl(it.attr("href")) }
             .filter { it.contains(".m3u8") || it.contains(".mp4") }
+
+        // As a last resort, global <source src> on page (some templates place it next to a self-closed video)
+        candidates += doc.select("source[src]").map { normalizeUrl(it.attr("src")) }
 
         // Parse inline scripts for direct sources
         runCatching {
@@ -218,14 +234,20 @@ class IncestFlix : MainAPI() {
         if (unique.isEmpty()) return false
 
         unique.forEach { link ->
+            val isHls = link.contains(".m3u8")
             callback.invoke(
                 newExtractorLink(
                     source = name,
-                    name = name,
-                    url = link
+                    name = if (isHls) "HLS" else "Direct",
+                    url = link,
+                    referer = data,
+                    quality = Qualities.Unknown.value,
+                    isM3u8 = isHls
                 ) {
-                    this.referer = data
-                    this.quality = Qualities.Unknown.value
+                    this.headers = mapOf(
+                        Pair("User-Agent", ua),
+                        Pair("Referer", data)
+                    )
                 }
             )
         }
