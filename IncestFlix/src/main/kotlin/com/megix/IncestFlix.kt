@@ -15,61 +15,43 @@ class IncestFlix : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW)
     override val vpnStatus = VPNStatus.MightBeNeeded
 
-    // Dynamic homepage: a single entry that triggers building sections from /alltags
+    // Static homepage sections for specific tags requested
     override val mainPage = mainPageOf(
-        "ALL_TAGS" to "All Tags"
+        "$mainUrl/tag/Reluctant" to "Reluctant",
+        "$mainUrl/tag/BS" to "BS Brother, Sister",
+        "$mainUrl/tag/MS" to "MS Mother, Son",
+        "$mainUrl/tag/FD" to "FD Father, Daughter",
+        "$mainUrl/tag/MD" to "MD Mother, Daughter",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (request.data == "ALL_TAGS") {
-            // Build multiple sections from /alltags
-            val tagDoc = app.get("$mainUrl/alltags").document
-            // Collect tag name + href; limit to avoid heavy homepage/timeouts
-            val tags = tagDoc.select("a[href^=/tag/]")
-                .map { it.text() to normalizeUrl(it.attr("href")) }
-                .distinctBy { it.second.lowercase() }
-                .take(12)
+        val url = if (page <= 1) request.data else "${request.data}/page/$page"
+        val document = app.get(url).document
 
-            val lists = arrayListOf<HomePageList>()
-            for ((tagName, tagUrl) in tags) {
-                val tagPageUrl = if (page <= 1) tagUrl else "$tagUrl/page/$page"
-                val doc = app.get(tagPageUrl).document
-                val items = doc.select("a[href*=/watch/]")
-                    .mapNotNull { it.toSearchResultWithPoster() }
-                    .distinctBy { it.url }
-                    .take(12)
-                if (items.isNotEmpty()) {
-                    lists += HomePageList(
-                        name = tagName,
-                        list = items,
-                        isHorizontalImages = true
-                    )
-                }
-            }
-            // Multiple section response
-            return newHomePageResponse(list = lists, hasNext = true)
-        } else {
-            val url = if (page <= 1) request.data else "${request.data}/page/$page"
-            val document = app.get(url).document
+        val items = document.select("a[href^=/watch], a[href*=/watch/]")
+            .mapNotNull { it.toSearchResultWithPoster() }
+            .distinctBy { it.url }
+            .take(30)
 
-            val items = document.select("a[href*=/watch/]")
-                .mapNotNull { it.toSearchResultWithPoster() }
-                .distinctBy { it.url }
-
-            return newHomePageResponse(
-                list = HomePageList(
-                    name = request.name,
-                    list = items,
-                    isHorizontalImages = true
-                ),
-                hasNext = items.isNotEmpty()
-            )
-        }
+        return newHomePageResponse(
+            list = HomePageList(
+                name = request.name,
+                list = items,
+                isHorizontalImages = true
+            ),
+            hasNext = true
+        )
     }
 
     private fun Element.toSearchResultWithPoster(): SearchResponse? {
-        val href = this.attr("abs:href").ifBlank { return null }
-        val title = this.text().ifBlank { return null }
+        val href = this.attr("abs:href").ifBlank {
+            val rel = this.attr("href").ifBlank { return null }
+            normalizeUrl(rel)
+        }
+        val rawTitle = this.attr("title").ifBlank {
+            this.ownText().ifBlank { this.text() }
+        }.trim()
+        val title = if (rawTitle.isNotBlank()) rawTitle else href.substringAfterLast('/').replace('-', ' ').trim().ifBlank { href }
 
         // Try to infer poster from nearby elements
         val card = this.parent() ?: this
