@@ -24,11 +24,11 @@ class IncestFlix : MainAPI() {
         if (request.data == "ALL_TAGS") {
             // Build multiple sections from /alltags
             val tagDoc = app.get("$mainUrl/alltags").document
-            // Collect tag name + href; limit to avoid heavy homepage
+            // Collect tag name + href; limit to avoid heavy homepage/timeouts
             val tags = tagDoc.select("a[href^=/tag/]")
                 .map { it.text() to normalizeUrl(it.attr("href")) }
                 .distinctBy { it.second.lowercase() }
-                .take(30)
+                .take(12)
 
             val lists = arrayListOf<HomePageList>()
             for ((tagName, tagUrl) in tags) {
@@ -73,15 +73,20 @@ class IncestFlix : MainAPI() {
 
         // Try to infer poster from nearby elements
         val card = this.parent() ?: this
-        val posterCandidates = sequence<String?> {
-            // Common patterns: background-image style on parent/siblings
-            yield(card.attr("style"))
-            yield(card.parent()?.attr("style"))
-            yield(card.selectFirst("[style*=background-image]")?.attr("style"))
-            // Direct images
-            yield(card.selectFirst("img[src]")?.attr("abs:src"))
-            yield(card.selectFirst("img[data-src]")?.attr("abs:data-src"))
-        }.mapNotNull { it }.toList()
+        val posterCandidates = mutableListOf<String>()
+        // 1) Look for explicit overlay blocks commonly used on the site
+        card.siblingElements().select("div.video-overlay-click").forEach { e ->
+            posterCandidates.add(e.attr("style"))
+        }
+        for (p in card.parents()) {
+            p.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
+        }
+        // 2) Generic background-image on nearby nodes
+        card.select("[style*=background-image]").forEach { posterCandidates.add(it.attr("style")) }
+        card.parent()?.select("[style*=background-image]")?.forEach { posterCandidates.add(it.attr("style")) }
+        // 3) Direct images near the anchor
+        card.select("img[src]").firstOrNull()?.attr("abs:src")?.let { posterCandidates.add(it) }
+        card.select("img[data-src]").firstOrNull()?.attr("abs:data-src")?.let { posterCandidates.add(it) }
 
         val poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
 
