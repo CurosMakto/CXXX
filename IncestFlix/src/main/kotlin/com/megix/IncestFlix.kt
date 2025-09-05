@@ -14,6 +14,7 @@ class IncestFlix : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.NSFW)
     override val vpnStatus = VPNStatus.MightBeNeeded
+    private val ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
 
     // Static homepage sections for specific tags requested
     override val mainPage = mainPageOf(
@@ -26,7 +27,7 @@ class IncestFlix : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) request.data else "${request.data}/page/$page"
-        val document = app.get(url, referer = mainUrl).document
+        val document = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
 
         val items = document.select("a[href^=/watch], a[href*=/watch/]")
             .mapNotNull { it.toSearchResultWithPoster() }
@@ -70,17 +71,11 @@ class IncestFlix : MainAPI() {
         card.select("img[src]").firstOrNull()?.attr("abs:src")?.let { posterCandidates.add(it) }
         card.select("img[data-src]").firstOrNull()?.attr("abs:data-src")?.let { posterCandidates.add(it) }
 
-        var poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
-        if (poster.isNullOrBlank()) {
-            // Fallback: fetch the watch page and read og:image
-            runCatching {
-                val ld = app.get(href, referer = mainUrl).document
-                poster = ld.selectFirst("meta[property=og:image]")?.attr("content")
-            }
-        }
+        val poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
-            this.posterUrl = poster
+            this.posterUrl = poster?.let { normalizeUrl(it) }
+            this.posterHeaders = mapOf(Pair("referer", mainUrl))
         }
     }
 
@@ -89,8 +84,8 @@ class IncestFlix : MainAPI() {
         val out = mutableListOf<SearchResponse>()
         for (i in 1..5) {
             val url = if (i == 1) "$mainUrl/?s=${query}" else "$mainUrl/page/$i/?s=${query}"
-            val doc = app.get(url).document
-            val results = doc.select("a[href*=/watch/]")
+            val doc = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
+            val results = doc.select("a[href^=/watch], a[href*=/watch/], a[href*=/embed/]")
                 .mapNotNull { it.toSearchResultWithPoster() }
             out.addAll(results)
             if (results.isEmpty()) break
@@ -99,11 +94,11 @@ class IncestFlix : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
+        val document = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
         val title = document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: document.selectFirst("title")?.text()
             ?: name
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")?.let { normalizeUrl(it) }
 
         // Collect some related items if available
         val recommendations = document.select("a[href*=/watch/]")
@@ -114,6 +109,7 @@ class IncestFlix : MainAPI() {
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
+            this.posterHeaders = mapOf(Pair("referer", mainUrl))
             this.recommendations = recommendations
         }
     }
@@ -124,7 +120,7 @@ class IncestFlix : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val doc = app.get(data).document
+        val doc = app.get(data, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
 
         // Try common patterns: direct <video><source>, iframes to hosts, or anchors to files
         val candidates = mutableListOf<String>()
