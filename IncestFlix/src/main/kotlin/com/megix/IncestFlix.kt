@@ -58,9 +58,11 @@ class IncestFlix : MainAPI() {
         val anchors = document.select("a[href^=/watch], a[href*=/watch/]")
         val built = anchors.mapIndexedNotNull { idx, a ->
             val href = a.attr("abs:href").ifBlank { normalizeUrl(a.attr("href")) }
-            if (href.isBlank()) return@mapNotNull null
-            val rawTitle = a.attr("title").ifBlank { a.ownText().ifBlank { a.text() } }.trim()
-            val title = if (rawTitle.isNotBlank()) rawTitle else href.substringAfterLast('/').replace('-', ' ').trim().ifBlank { href }
+            if (href.isBlank()) {
+                null
+            } else {
+                val rawTitle = a.attr("title").ifBlank { a.ownText().ifBlank { a.text() } }.trim()
+                val title = if (rawTitle.isNotBlank()) rawTitle else href.substringAfterLast('/').replace('-', ' ').trim().ifBlank { href }
 
             // Infer poster locally
             val card = a.parent() ?: a
@@ -86,9 +88,10 @@ class IncestFlix : MainAPI() {
                     poster = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
                 }
             }
-            newMovieSearchResponse(title, href, TvType.Movie) {
-                this.posterUrl = poster?.let { normalizeUrl(it) }
-                this.posterHeaders = mapOf(Pair("referer", mainUrl))
+                newMovieSearchResponse(title, href, TvType.Movie) {
+                    this.posterUrl = poster?.let { normalizeUrl(it) }
+                    this.posterHeaders = mapOf(Pair("referer", mainUrl))
+                }
             }
         }
             .distinctBy { it.url }
@@ -198,35 +201,37 @@ class IncestFlix : MainAPI() {
             val genSibling = doc.selectFirst("video#incflix-player ~ source[src]")?.attr("src")?.let { normalizeUrl(it) }
 
             listOf(srcAttr, childSource, siblingSource, genSibling).filterNotNull().forEach { s ->
-                if (s.isNotBlank()) candidates += s
+                if (s.isNotBlank()) candidates.add(s)
             }
             // poster handled in load() via og:image
         }
 
         // video > source[src]
-        candidates += doc.select("video source[src]").map { normalizeUrl(it.attr("src")) }
+        candidates.addAll(doc.select("video source[src]").map { normalizeUrl(it.attr("src")) })
         // video[src]
-        candidates += doc.select("video[src]").map { normalizeUrl(it.attr("src")) }
+        candidates.addAll(doc.select("video[src]").map { normalizeUrl(it.attr("src")) })
         // data-src/data-video on video/source
-        candidates += doc.select("video[data-src], source[data-src]").map { normalizeUrl(it.attr("data-src")) }
-        candidates += doc.select("video[data-video]").map { normalizeUrl(it.attr("data-video")) }
+        candidates.addAll(doc.select("video[data-src], source[data-src]").map { normalizeUrl(it.attr("data-src")) })
+        candidates.addAll(doc.select("video[data-video]").map { normalizeUrl(it.attr("data-video")) })
         // iframes (rare but keep)
-        candidates += doc.select("iframe[src]").map { normalizeUrl(it.attr("src")) }
+        candidates.addAll(doc.select("iframe[src]").map { normalizeUrl(it.attr("src")) })
         // anchors that look like media links
-        candidates += doc.select("a[href]")
-            .map { normalizeUrl(it.attr("href")) }
-            .filter { it.contains(".m3u8") || it.contains(".mp4") }
+        candidates.addAll(
+            doc.select("a[href]")
+                .map { normalizeUrl(it.attr("href")) }
+                .filter { it.contains(".m3u8") || it.contains(".mp4") }
+        )
 
         // As a last resort, global <source src> on page (some templates place it next to a self-closed video)
-        candidates += doc.select("source[src]").map { normalizeUrl(it.attr("src")) }
+        candidates.addAll(doc.select("source[src]").map { normalizeUrl(it.attr("src")) })
 
         // Parse inline scripts for direct sources
         runCatching {
             val scriptText = doc.select("script").joinToString("\n") { it.data() }
             val m3u8Regex = Regex("https?:\\/\\/[^'\"\\s)]+\\.m3u8")
             val mp4Regex = Regex("https?:\\/\\/[^'\"\\s)]+\\.mp4")
-            candidates += m3u8Regex.findAll(scriptText).map { it.value }.toList()
-            candidates += mp4Regex.findAll(scriptText).map { it.value }.toList()
+            candidates.addAll(m3u8Regex.findAll(scriptText).map { it.value }.toList())
+            candidates.addAll(mp4Regex.findAll(scriptText).map { it.value }.toList())
         }
 
         val unique = candidates.filter { it.isNotBlank() }.distinct()
@@ -234,21 +239,12 @@ class IncestFlix : MainAPI() {
         if (unique.isEmpty()) return false
 
         unique.forEach { link ->
-            val isHls = link.contains(".m3u8")
             callback.invoke(
                 newExtractorLink(
                     source = name,
-                    name = if (isHls) "HLS" else "Direct",
+                    name = name,
                     url = link
-                ) {
-                    this.referer = data
-                    this.quality = Qualities.Unknown.value
-                    this.isM3u8 = isHls
-                    this.headers = mapOf(
-                        Pair("User-Agent", ua),
-                        Pair("Referer", data)
-                    )
-                }
+                )
             )
         }
         return true
