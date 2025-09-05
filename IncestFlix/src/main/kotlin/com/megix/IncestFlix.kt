@@ -31,6 +31,7 @@ class IncestFlix : MainAPI() {
         val url = if (page <= 1) base else base + "page/$page/"
         val res = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl, allowRedirects = true)
         val document = res.document
+        val pageOrigin = originOf(res.url)
 
         // Special-case random: resolve to the resulting watch page and show it as a single item
         if (request.data.endsWith("/random")) {
@@ -44,7 +45,7 @@ class IncestFlix : MainAPI() {
                 val one = newMovieSearchResponse(wtitle.ifBlank { finalWatch }, finalWatch, TvType.Movie) {
                     this.posterUrl = wposter
                     this.posterHeaders = mapOf(
-                        Pair("referer", mainUrl),
+                        Pair("referer", "$mainUrl/"),
                         Pair("User-Agent", ua)
                     )
                 }
@@ -88,9 +89,12 @@ class IncestFlix : MainAPI() {
                     if (v.isNotBlank()) posterCandidates.add(v)
                 }
             }
-            // covers pattern from multiple nearby HTML surfaces
+            // covers pattern from multiple nearby HTML surfaces (any host, allow protocol-relative and relative)
             runCatching {
-                val coversRegex = Regex("(?:https?:)?//inc-\\d+\\.incestflix\\.party/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)", RegexOption.IGNORE_CASE)
+                val coversRegex = Regex(
+                    "((?:https?:)?//[^'\"\\s)]+)?/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)",
+                    RegexOption.IGNORE_CASE
+                )
                 val htmlParts = mutableListOf<String>()
                 htmlParts += a.outerHtml()
                 htmlParts += card.outerHtml()
@@ -99,7 +103,7 @@ class IncestFlix : MainAPI() {
                 val parents = card.parents().toList()
                 htmlParts += parents.take(3).joinToString("\n") { it.outerHtml() }
                 htmlParts.forEach { h ->
-                    posterCandidates.addAll(coversRegex.findAll(h).map { it.value })
+                    posterCandidates.addAll(coversRegex.findAll(h).map { resolveCoversUrl(it.value, pageOrigin) })
                 }
             }
             // srcset handling (pick first url)
@@ -113,13 +117,34 @@ class IncestFlix : MainAPI() {
                 ?: posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) }
                 ?: posterCandidates.firstOrNull()
             val norm = poster?.let { normalizeUrl(it) }
-                newMovieSearchResponse(title, href, TvType.Movie) {
+                val item = newMovieSearchResponse(title, href, TvType.Movie) {
                     this.posterUrl = norm
                     this.posterHeaders = mapOf(
-                        Pair("referer", norm?.let { originOf(it) } ?: mainUrl),
+                        Pair("referer", "$mainUrl/"),
                         Pair("User-Agent", ua)
                     )
                 }
+                if (item.posterUrl.isNullOrBlank() && idx < 8) {
+                    runCatching {
+                        val wdoc = app.get(
+                            href,
+                            headers = mapOf("User-Agent" to ua),
+                            referer = mainUrl,
+                            allowRedirects = true,
+                            timeout = 2000
+                        ).document
+                        val og = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
+                        if (!og.isNullOrBlank()) {
+                            val n = normalizeUrl(og)
+                            item.posterUrl = n
+                            item.posterHeaders = mapOf(
+                                Pair("referer", "$mainUrl/"),
+                                Pair("User-Agent", ua)
+                            )
+                        }
+                    }
+                }
+                item
             }
         }
             .distinctBy { it.url }
@@ -164,10 +189,13 @@ class IncestFlix : MainAPI() {
                 if (v.isNotBlank()) posterCandidates.add(v)
             }
         }
-        // covers pattern directly from nearby HTML
+        // covers pattern directly from nearby HTML (any host)
         runCatching {
             val html = card.outerHtml()
-            val coversRegex = Regex("(?:https?:)?//inc-\\d+\\.incestflix\\.party/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)", RegexOption.IGNORE_CASE)
+            val coversRegex = Regex(
+                "((?:https?:)?//[^'\"\\s)]+)?/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)",
+                RegexOption.IGNORE_CASE
+            )
             posterCandidates.addAll(coversRegex.findAll(html).map { it.value })
         }
         // srcset handling (pick first url)
@@ -181,14 +209,15 @@ class IncestFlix : MainAPI() {
             ?: posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) }
             ?: posterCandidates.firstOrNull()
 
-        return newMovieSearchResponse(title, href, TvType.Movie) {
+        val item = newMovieSearchResponse(title, href, TvType.Movie) {
             val norm = poster?.let { normalizeUrl(it) }
             this.posterUrl = norm
             this.posterHeaders = mapOf(
-                Pair("referer", mainUrl),
+                Pair("referer", "$mainUrl/"),
                 Pair("User-Agent", ua)
             )
         }
+        return item
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -200,6 +229,29 @@ class IncestFlix : MainAPI() {
             val doc = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
             val results = doc.select("a[href^=/watch], a[href*=/watch/], a[href*=/video/]")
                 .mapNotNull { it.toSearchResultWithPoster() }
+                .mapIndexed { idx, item ->
+                    if (item.posterUrl.isNullOrBlank() && idx < 8) {
+                        runCatching {
+                            val wdoc = app.get(
+                                item.url,
+                                headers = mapOf("User-Agent" to ua),
+                                referer = mainUrl,
+                                allowRedirects = true,
+                                timeout = 2000
+                            ).document
+                            val og = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
+                            if (!og.isNullOrBlank()) {
+                                val n = normalizeUrl(og)
+                                item.posterUrl = n
+                                item.posterHeaders = mapOf(
+                                    Pair("referer", "$mainUrl/"),
+                                    Pair("User-Agent", ua)
+                                )
+                            }
+                        }
+                    }
+                    item
+                }
             out.addAll(results)
             if (results.isEmpty()) break
         }
@@ -352,6 +404,17 @@ class IncestFlix : MainAPI() {
             "$scheme://$host"
         } catch (e: Throwable) {
             mainUrl
+        }
+    }
+
+    private fun resolveCoversUrl(raw: String, origin: String): String {
+        val s = raw.trim()
+        val valOrUrl = extractBgUrl(s) ?: s
+        return when {
+            valOrUrl.startsWith("http") -> valOrUrl
+            valOrUrl.startsWith("//") -> "https:" + valOrUrl
+            valOrUrl.startsWith("/covers/") -> origin + valOrUrl
+            else -> normalizeUrl(valOrUrl)
         }
     }
 }
