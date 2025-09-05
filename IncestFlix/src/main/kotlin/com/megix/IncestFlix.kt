@@ -47,7 +47,7 @@ class IncestFlix : MainAPI() {
                 }
             }
             // Multiple section response
-            return newHomePageResponse(lists = lists, hasNext = true)
+            return newHomePageResponse(list = lists, hasNext = true)
         } else {
             val url = if (page <= 1) request.data else "${request.data}/page/$page"
             val document = app.get(url).document
