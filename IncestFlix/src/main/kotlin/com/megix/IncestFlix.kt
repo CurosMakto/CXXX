@@ -18,16 +18,17 @@ class IncestFlix : MainAPI() {
 
     // Static homepage sections for specific tags requested
     override val mainPage = mainPageOf(
-        "$mainUrl/tag/Reluctant" to "Reluctant",
-        "$mainUrl/tag/BS" to "BS Brother, Sister",
-        "$mainUrl/tag/MS" to "MS Mother, Son",
-        "$mainUrl/tag/FD" to "FD Father, Daughter",
-        "$mainUrl/tag/MD" to "MD Mother, Daughter",
+        "$mainUrl/tag/Reluctant/" to "Reluctant",
+        "$mainUrl/tag/BS/" to "BS Brother, Sister",
+        "$mainUrl/tag/MS/" to "MS Mother, Son",
+        "$mainUrl/tag/FD/" to "FD Father, Daughter",
+        "$mainUrl/tag/MD/" to "MD Mother, Daughter",
         "$mainUrl/random" to "Random",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page <= 1) request.data else "${request.data}/page/$page"
+        val base = if (request.data.endsWith("/")) request.data else request.data + "/"
+        val url = if (page <= 1) base else base + "page/$page/"
         val res = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl, allowRedirects = true)
         val document = res.document
 
@@ -55,7 +56,8 @@ class IncestFlix : MainAPI() {
             }
         }
 
-        val anchors = document.select("a[href^=/watch], a[href*=/watch/]")
+        // Tag pages sometimes use different paths (e.g. /video/..). Cover both.
+        val anchors = document.select("a[href^=/watch], a[href*=/watch/], a[href*=/video/]")
         val built = anchors.mapIndexedNotNull { idx, a ->
             val href = a.attr("abs:href").ifBlank { normalizeUrl(a.attr("href")) }
             if (href.isBlank()) {
@@ -64,8 +66,12 @@ class IncestFlix : MainAPI() {
                 val rawTitle = a.attr("title").ifBlank { a.ownText().ifBlank { a.text() } }.trim()
                 val title = if (rawTitle.isNotBlank()) rawTitle else href.substringAfterLast('/').replace('-', ' ').trim().ifBlank { href }
 
-            // Infer poster locally
-            val card = a.parent() ?: a
+            // Infer poster locally: prefer a larger card root if present
+            val card = (a.parents().firstOrNull { parent ->
+                val cls = parent.className()
+                cls.contains("video-item") || cls.contains("post") || cls.contains("thumb") ||
+                cls.contains("item") || parent.tagName().equals("article", true)
+            } ?: a.parent()) ?: a
             val posterCandidates = mutableListOf<String>()
             // overlays / background-image styles
             card.siblingElements().select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
@@ -74,10 +80,16 @@ class IncestFlix : MainAPI() {
             card.parent()?.select("[style*=background-image]")?.forEach { posterCandidates.add(it.attr("style")) }
             // explicit attributes
             listOf("src", "data-src", "data-lazy-src", "data-original", "data-bg").forEach { attr ->
-                card.select("img[$attr], [${attr}]").firstOrNull()?.let { el ->
+                card.select("img[$attr], [${attr}], source[$attr]").firstOrNull()?.let { el ->
                     val v = el.attr("abs:$attr").ifBlank { el.attr(attr) }
                     if (v.isNotBlank()) posterCandidates.add(v)
                 }
+            }
+            // covers pattern directly from nearby HTML
+            runCatching {
+                val html = card.outerHtml()
+                val coversRegex = Regex("https?://inc-\\d+\\.incestflix\\.party/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)", RegexOption.IGNORE_CASE)
+                posterCandidates.addAll(coversRegex.findAll(html).map { it.value })
             }
             // srcset handling (pick first url)
             card.select("img[srcset], source[srcset]").firstOrNull()?.attr("srcset")?.let { ss ->
@@ -85,10 +97,23 @@ class IncestFlix : MainAPI() {
                 if (!first.isNullOrBlank()) posterCandidates.add(first)
             }
 
-            val poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
+            var poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
+            // very small capped network fallback to speed up visible items only
+            if (poster.isNullOrBlank() && idx < 6) {
+                runCatching {
+                    val wdoc = app.get(
+                        href,
+                        headers = mapOf("User-Agent" to ua),
+                        referer = mainUrl,
+                        allowRedirects = true,
+                        timeout = 3000
+                    ).document
+                    poster = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
+                }
+            }
                 newMovieSearchResponse(title, href, TvType.Movie) {
                     this.posterUrl = poster?.let { normalizeUrl(it) }
-                    this.posterHeaders = mapOf(Pair("referer", mainUrl))
+                    this.posterHeaders = mapOf(Pair("referer", "$mainUrl/"))
                 }
             }
         }
@@ -144,10 +169,10 @@ class IncestFlix : MainAPI() {
         // Tag-based search: /tag/{slug}/page/{i}
         val slug = query.trim().replace(Regex("\\s+"), "-")
         val out = mutableListOf<SearchResponse>()
-        for (i in 1..6) {
-            val url = if (i == 1) "$mainUrl/tag/$slug" else "$mainUrl/tag/$slug/page/$i"
+        for (i in 1..10) {
+            val url = if (i == 1) "$mainUrl/tag/$slug/" else "$mainUrl/tag/$slug/page/$i/"
             val doc = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
-            val results = doc.select("a[href^=/watch], a[href*=/watch/]")
+            val results = doc.select("a[href^=/watch], a[href*=/watch/], a[href*=/video/]")
                 .mapNotNull { it.toSearchResultWithPoster() }
             out.addAll(results)
             if (results.isEmpty()) break
