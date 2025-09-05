@@ -97,20 +97,7 @@ class IncestFlix : MainAPI() {
                 if (!first.isNullOrBlank()) posterCandidates.add(first)
             }
 
-            var poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
-            // very small capped network fallback to speed up visible items only
-            if (poster.isNullOrBlank() && idx < 6) {
-                runCatching {
-                    val wdoc = app.get(
-                        href,
-                        headers = mapOf("User-Agent" to ua),
-                        referer = mainUrl,
-                        allowRedirects = true,
-                        timeout = 3000
-                    ).document
-                    poster = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
-                }
-            }
+            val poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
                 newMovieSearchResponse(title, href, TvType.Movie) {
                     this.posterUrl = poster?.let { normalizeUrl(it) }
                     this.posterHeaders = mapOf(Pair("referer", "$mainUrl/"))
@@ -143,25 +130,35 @@ class IncestFlix : MainAPI() {
         // Try to infer poster from nearby elements
         val card = this.parent() ?: this
         val posterCandidates = mutableListOf<String>()
-        // 1) Look for explicit overlay blocks commonly used on the site
-        card.siblingElements().select("div.video-overlay-click").forEach { e ->
-            posterCandidates.add(e.attr("style"))
-        }
-        for (p in card.parents()) {
-            p.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
-        }
-        // 2) Generic background-image on nearby nodes
+        // overlays / background-image styles
+        card.siblingElements().select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
+        for (p in card.parents()) { p.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) } }
         card.select("[style*=background-image]").forEach { posterCandidates.add(it.attr("style")) }
         card.parent()?.select("[style*=background-image]")?.forEach { posterCandidates.add(it.attr("style")) }
-        // 3) Direct images near the anchor
-        card.select("img[src]").firstOrNull()?.attr("abs:src")?.let { posterCandidates.add(it) }
-        card.select("img[data-src]").firstOrNull()?.attr("abs:data-src")?.let { posterCandidates.add(it) }
+        // explicit attributes around the card
+        listOf("src", "data-src", "data-lazy-src", "data-original", "data-bg").forEach { attr ->
+            card.select("img[$attr], [${attr}], source[$attr]").firstOrNull()?.let { el ->
+                val v = el.attr("abs:$attr").ifBlank { el.attr(attr) }
+                if (v.isNotBlank()) posterCandidates.add(v)
+            }
+        }
+        // covers pattern directly from nearby HTML
+        runCatching {
+            val html = card.outerHtml()
+            val coversRegex = Regex("https?://inc-\\d+\\.incestflix\\.party/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)", RegexOption.IGNORE_CASE)
+            posterCandidates.addAll(coversRegex.findAll(html).map { it.value })
+        }
+        // srcset handling (pick first url)
+        card.select("img[srcset], source[srcset]").firstOrNull()?.attr("srcset")?.let { ss ->
+            val first = ss.split(',').map { it.trim().substringBefore(' ') }.firstOrNull()
+            if (!first.isNullOrBlank()) posterCandidates.add(first)
+        }
 
         val poster = posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) } ?: posterCandidates.firstOrNull()
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = poster?.let { normalizeUrl(it) }
-            this.posterHeaders = mapOf(Pair("referer", mainUrl))
+            this.posterHeaders = mapOf(Pair("referer", "$mainUrl/"))
         }
     }
 
