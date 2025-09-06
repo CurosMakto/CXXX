@@ -184,6 +184,8 @@ class IncestFlix : MainAPI() {
             cls.contains("item") || parent.tagName().equals("article", true)
         } ?: this.parent()) ?: this
         val posterCandidates = mutableListOf<String>()
+        // Compute current page origin once for URL resolution
+        val origin = originOf(this.baseUri())
         // overlays / background-image styles (restrict to inside card only)
         card.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
         card.select("[style*=background-image]").forEach { posterCandidates.add(it.attr("style")) }
@@ -196,7 +198,6 @@ class IncestFlix : MainAPI() {
         }
         // covers pattern from the card subtree only (any host)
         runCatching {
-            val origin = originOf(this.baseUri())
             val coversRegex = Regex(
                 "((?:https?:)?//[^'\"\\s)]+)?/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)",
                 RegexOption.IGNORE_CASE
