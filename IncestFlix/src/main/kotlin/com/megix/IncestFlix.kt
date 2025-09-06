@@ -111,11 +111,19 @@ class IncestFlix : MainAPI() {
                 if (!first.isNullOrBlank()) posterCandidates.add(first)
             }
 
-            val posterCoversFirst = posterCandidates.firstOrNull { it.contains("/covers/", ignoreCase = true) }
-            val poster = posterCoversFirst
-                ?: posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) }
-                ?: posterCandidates.firstOrNull()
-            val norm = poster?.let { normalizeUrl(it) }
+            // Normalize all candidates to absolute URLs for reliable selection
+            val normalized = posterCandidates.mapNotNull { raw ->
+                val r = raw.trim()
+                val fromStyle = extractBgUrl(r)
+                val candidate = when {
+                    r.contains("/covers/", true) -> resolveCoversUrl(r, pageOrigin)
+                    !fromStyle.isNullOrBlank() -> normalizeUrl(fromStyle)
+                    else -> normalizeUrl(r)
+                }
+                candidate.takeIf { it.startsWith("http") }
+            }
+            val poster = normalized.firstOrNull { it.contains("/covers/", true) } ?: normalized.firstOrNull()
+            val norm = poster
                 val item = newMovieSearchResponse(title, href, TvType.Movie) {
                     this.posterUrl = norm
                     this.posterHeaders = mapOf(
@@ -186,20 +194,15 @@ class IncestFlix : MainAPI() {
                 if (v.isNotBlank()) posterCandidates.add(v)
             }
         }
-        // covers pattern from closest surfaces (any host): element -> siblings
+        // covers pattern from the card subtree only (any host)
         runCatching {
             val origin = originOf(this.baseUri())
             val coversRegex = Regex(
                 "((?:https?:)?//[^'\"\\s)]+)?/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)",
                 RegexOption.IGNORE_CASE
             )
-            // 1) inside card subtree
+            // inside the card subtree only
             coversRegex.findAll(card.outerHtml()).firstOrNull()?.let { posterCandidates.add(resolveCoversUrl(it.value, origin)) }
-            // 2) direct siblings
-            if (posterCandidates.isEmpty()) {
-                val sib = card.siblingElements().joinToString("\n") { it.outerHtml() }
-                coversRegex.findAll(sib).firstOrNull()?.let { posterCandidates.add(resolveCoversUrl(it.value, origin)) }
-            }
         }
         // srcset handling (pick first url)
         card.select("img[srcset], source[srcset]").firstOrNull()?.attr("srcset")?.let { ss ->
@@ -207,13 +210,21 @@ class IncestFlix : MainAPI() {
             if (!first.isNullOrBlank()) posterCandidates.add(first)
         }
 
-        val posterCoversFirst = posterCandidates.firstOrNull { it.contains("/covers/", ignoreCase = true) }
-        val poster = posterCoversFirst
-            ?: posterCandidates.firstNotNullOfOrNull { extractBgUrl(it) }
-            ?: posterCandidates.firstOrNull()
+        // Normalize all candidates to absolute URLs for reliable selection
+        val normalized = posterCandidates.mapNotNull { raw ->
+            val r = raw.trim()
+            val fromStyle = extractBgUrl(r)
+            val candidate = when {
+                r.contains("/covers/", true) -> resolveCoversUrl(r, origin)
+                !fromStyle.isNullOrBlank() -> normalizeUrl(fromStyle)
+                else -> normalizeUrl(r)
+            }
+            candidate.takeIf { it.startsWith("http") }
+        }
+        val poster = normalized.firstOrNull { it.contains("/covers/", true) } ?: normalized.firstOrNull()
 
         val item = newMovieSearchResponse(title, href, TvType.Movie) {
-            val norm = poster?.let { normalizeUrl(it) }
+            val norm = poster
             this.posterUrl = norm
             this.posterHeaders = mapOf(
                 Pair("referer", "$mainUrl/"),
