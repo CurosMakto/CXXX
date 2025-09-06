@@ -186,24 +186,37 @@ class IncestFlix : MainAPI() {
         val posterCandidates = mutableListOf<String>()
         // Compute current page origin once for URL resolution
         val origin = originOf(this.baseUri())
-        // overlays / background-image styles (restrict to inside card only)
-        card.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
-        card.select("[style*=background-image]").forEach { posterCandidates.add(it.attr("style")) }
-        // explicit attributes around the card
+        // 1) Prefer anything directly inside the anchor subtree (strict)
         listOf("src", "data-src", "data-lazy-src", "data-original", "data-bg", "data-thumb", "data-thumbnail").forEach { attr ->
-            card.select("img[$attr], [${attr}], source[$attr]").firstOrNull()?.let { el ->
+            this.select("img[$attr], source[$attr]").firstOrNull()?.let { el ->
                 val v = el.attr("abs:$attr").ifBlank { el.attr(attr) }
                 if (v.isNotBlank()) posterCandidates.add(v)
             }
         }
-        // covers pattern from the card subtree only (any host)
         runCatching {
             val coversRegex = Regex(
                 "((?:https?:)?//[^'\"\\s)]+)?/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)",
                 RegexOption.IGNORE_CASE
             )
-            // inside the card subtree only
-            coversRegex.findAll(card.outerHtml()).firstOrNull()?.let { posterCandidates.add(resolveCoversUrl(it.value, origin)) }
+            coversRegex.findAll(this.outerHtml()).firstOrNull()?.let { posterCandidates.add(resolveCoversUrl(it.value, origin)) }
+        }
+        // 2) If still empty, use card-local styles and attributes (no parents/siblings)
+        if (posterCandidates.isEmpty()) {
+            card.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
+            card.select("[style*=background-image]").forEach { posterCandidates.add(it.attr("style")) }
+            listOf("src", "data-src", "data-lazy-src", "data-original", "data-bg", "data-thumb", "data-thumbnail").forEach { attr ->
+                card.select("img[$attr], source[$attr]").firstOrNull()?.let { el ->
+                    val v = el.attr("abs:$attr").ifBlank { el.attr(attr) }
+                    if (v.isNotBlank()) posterCandidates.add(v)
+                }
+            }
+            runCatching {
+                val coversRegex = Regex(
+                    "((?:https?:)?//[^'\"\\s)]+)?/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)",
+                    RegexOption.IGNORE_CASE
+                )
+                coversRegex.findAll(card.outerHtml()).firstOrNull()?.let { posterCandidates.add(resolveCoversUrl(it.value, origin)) }
+            }
         }
         // srcset handling (pick first url)
         card.select("img[srcset], source[srcset]").firstOrNull()?.attr("srcset")?.let { ss ->
@@ -244,29 +257,6 @@ class IncestFlix : MainAPI() {
             val doc = app.get(url, headers = mapOf("User-Agent" to ua), referer = mainUrl).document
             val results = doc.select("a[href^=/watch], a[href*=/watch/], a[href*=/video/]")
                 .mapNotNull { it.toSearchResultWithPoster() }
-                .mapIndexed { idx, item ->
-                    if (item.posterUrl.isNullOrBlank() && idx < 8) {
-                        runCatching {
-                            val wdoc = app.get(
-                                item.url,
-                                headers = mapOf("User-Agent" to ua),
-                                referer = mainUrl,
-                                allowRedirects = true,
-                                timeout = 2000
-                            ).document
-                            val og = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
-                            if (!og.isNullOrBlank()) {
-                                val n = normalizeUrl(og)
-                                item.posterUrl = n
-                                item.posterHeaders = mapOf(
-                                    Pair("referer", "$mainUrl/"),
-                                    Pair("User-Agent", ua)
-                                )
-                            }
-                        }
-                    }
-                    item
-                }
             out.addAll(results)
             if (results.isEmpty()) break
         }
@@ -282,29 +272,8 @@ class IncestFlix : MainAPI() {
 
         // Collect related items with targeted og:image fallback for missing posters (fast, capped)
         val recAnchors = document.select("a[href*=/watch/]")
-        val recommendations = recAnchors.mapIndexedNotNull { idx, a ->
-            val item = a.toSearchResultWithPoster() ?: return@mapIndexedNotNull null
-            if (item.posterUrl.isNullOrBlank() && idx < 8) {
-                runCatching {
-                    val wdoc = app.get(
-                        item.url,
-                        headers = mapOf("User-Agent" to ua),
-                        referer = mainUrl,
-                        allowRedirects = true,
-                        timeout = 3000
-                    ).document
-                    val og = wdoc.selectFirst("meta[property=og:image]")?.attr("content")
-                    if (!og.isNullOrBlank()) {
-                        val norm = normalizeUrl(og)
-                        item.posterUrl = norm
-                        item.posterHeaders = mapOf(
-                            Pair("referer", mainUrl),
-                            Pair("User-Agent", ua)
-                        )
-                    }
-                }
-            }
-            item
+        val recommendations = recAnchors.mapNotNull { a ->
+            a.toSearchResultWithPoster()
         }
             .filter { it.url != url }
             .distinctBy { it.url }
