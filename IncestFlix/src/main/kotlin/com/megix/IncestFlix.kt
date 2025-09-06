@@ -77,11 +77,9 @@ class IncestFlix : MainAPI() {
                 cls.contains("item") || parent.tagName().equals("article", true)
             } ?: a.parent()) ?: a
             val posterCandidates = mutableListOf<String>()
-            // overlays / background-image styles
-            card.siblingElements().select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
-            for (p in card.parents()) { p.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) } }
+            // overlays / background-image styles (restrict to inside card only)
+            card.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
             card.select("[style*=background-image]").forEach { posterCandidates.add(it.attr("style")) }
-            card.parent()?.select("[style*=background-image]")?.forEach { posterCandidates.add(it.attr("style")) }
             // explicit attributes
             listOf("src", "data-src", "data-lazy-src", "data-original", "data-bg", "data-thumb", "data-thumbnail").forEach { attr ->
                 card.select("img[$attr], [${attr}], source[$attr]").firstOrNull()?.let { el ->
@@ -89,21 +87,22 @@ class IncestFlix : MainAPI() {
                     if (v.isNotBlank()) posterCandidates.add(v)
                 }
             }
-            // covers pattern from multiple nearby HTML surfaces (any host, allow protocol-relative and relative)
+            // covers pattern from closest surfaces (any host): anchor -> card -> siblings
             runCatching {
                 val coversRegex = Regex(
                     "((?:https?:)?//[^'\"\\s)]+)?/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)",
                     RegexOption.IGNORE_CASE
                 )
-                val htmlParts = mutableListOf<String>()
-                htmlParts += a.outerHtml()
-                htmlParts += card.outerHtml()
-                htmlParts += card.siblingElements().joinToString("\n") { it.outerHtml() }
-                // include a few parent layers
-                val parents = card.parents().toList()
-                htmlParts += parents.take(3).joinToString("\n") { it.outerHtml() }
-                htmlParts.forEach { h ->
-                    posterCandidates.addAll(coversRegex.findAll(h).map { resolveCoversUrl(it.value, pageOrigin) })
+                // 1) anchor markup
+                coversRegex.findAll(a.outerHtml()).firstOrNull()?.let { posterCandidates.add(resolveCoversUrl(it.value, pageOrigin)) }
+                // 2) inside the card subtree
+                if (posterCandidates.isEmpty()) {
+                    coversRegex.findAll(card.outerHtml()).firstOrNull()?.let { posterCandidates.add(resolveCoversUrl(it.value, pageOrigin)) }
+                }
+                // 3) direct siblings only
+                if (posterCandidates.isEmpty()) {
+                    val sib = card.siblingElements().joinToString("\n") { it.outerHtml() }
+                    coversRegex.findAll(sib).firstOrNull()?.let { posterCandidates.add(resolveCoversUrl(it.value, pageOrigin)) }
                 }
             }
             // srcset handling (pick first url)
@@ -177,11 +176,9 @@ class IncestFlix : MainAPI() {
             cls.contains("item") || parent.tagName().equals("article", true)
         } ?: this.parent()) ?: this
         val posterCandidates = mutableListOf<String>()
-        // overlays / background-image styles
-        card.siblingElements().select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
-        for (p in card.parents()) { p.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) } }
+        // overlays / background-image styles (restrict to inside card only)
+        card.select("div.video-overlay-click").forEach { e -> posterCandidates.add(e.attr("style")) }
         card.select("[style*=background-image]").forEach { posterCandidates.add(it.attr("style")) }
-        card.parent()?.select("[style*=background-image]")?.forEach { posterCandidates.add(it.attr("style")) }
         // explicit attributes around the card
         listOf("src", "data-src", "data-lazy-src", "data-original", "data-bg", "data-thumb", "data-thumbnail").forEach { attr ->
             card.select("img[$attr], [${attr}], source[$attr]").firstOrNull()?.let { el ->
@@ -189,14 +186,20 @@ class IncestFlix : MainAPI() {
                 if (v.isNotBlank()) posterCandidates.add(v)
             }
         }
-        // covers pattern directly from nearby HTML (any host)
+        // covers pattern from closest surfaces (any host): element -> siblings
         runCatching {
-            val html = card.outerHtml()
+            val origin = originOf(this.baseUri())
             val coversRegex = Regex(
                 "((?:https?:)?//[^'\"\\s)]+)?/covers/[^'\"\\s)]+\\.(?:png|jpe?g|webp)",
                 RegexOption.IGNORE_CASE
             )
-            posterCandidates.addAll(coversRegex.findAll(html).map { it.value })
+            // 1) inside card subtree
+            coversRegex.findAll(card.outerHtml()).firstOrNull()?.let { posterCandidates.add(resolveCoversUrl(it.value, origin)) }
+            // 2) direct siblings
+            if (posterCandidates.isEmpty()) {
+                val sib = card.siblingElements().joinToString("\n") { it.outerHtml() }
+                coversRegex.findAll(sib).firstOrNull()?.let { posterCandidates.add(resolveCoversUrl(it.value, origin)) }
+            }
         }
         // srcset handling (pick first url)
         card.select("img[srcset], source[srcset]").firstOrNull()?.attr("srcset")?.let { ss ->
