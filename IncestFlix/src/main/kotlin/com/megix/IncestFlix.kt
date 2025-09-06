@@ -6,7 +6,7 @@ import org.jsoup.nodes.Element
 import org.jsoup.nodes.Document
 
 class IncestFlix : MainAPI() {
-    override var mainUrl = "https://www.incestflix.party"
+    override var mainUrl = "https://www.incestflix.com"
     override var name = "IncestFlix"
     override val hasMainPage = true
     override var lang = "en"
